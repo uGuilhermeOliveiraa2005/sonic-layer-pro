@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import ReactPlayer from 'react-player';
 import { 
   Play, Pause, Trash2, Plus, Zap, 
-  Disc, LayoutList, DownloadCloud 
+  Disc, LayoutList, DownloadCloud, Music 
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { getCurrentWindow } from '@tauri-apps/api/window';
@@ -10,7 +10,7 @@ import './App.css';
 
 function App() {
   // --- ESTADOS ---
-  const [activeTab, setActiveTab] = useState('add'); // 'add' | 'library'
+  const [activeTab, setActiveTab] = useState('add');
   const [inputUrl, setInputUrl] = useState('');
   const [playlist, setPlaylist] = useState(() => {
     const saved = localStorage.getItem('masterPlaylist');
@@ -21,6 +21,8 @@ function App() {
   const [currentTrackIndex, setCurrentTrackIndex] = useState(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [played, setPlayed] = useState(0);
+  const [duration, setDuration] = useState(0);
+  const [ready, setReady] = useState(false);
   const playerRef = useRef(null);
   const appWindow = getCurrentWindow();
 
@@ -36,19 +38,73 @@ function App() {
   };
   const handleClose = () => appWindow.close();
 
+  // --- EXTRAIR METADADOS DA URL ---
+  const extractVideoInfo = (url) => {
+    // YouTube
+    const youtubeMatch = url.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/)([^&\s]+)/);
+    if (youtubeMatch) {
+      return {
+        id: youtubeMatch[1],
+        platform: 'youtube',
+        name: `YouTube Video - ${youtubeMatch[1].substring(0, 8)}`,
+        thumbnail: `https://img.youtube.com/vi/${youtubeMatch[1]}/mqdefault.jpg`
+      };
+    }
+    
+    // SoundCloud
+    if (url.includes('soundcloud.com')) {
+      const parts = url.split('/').filter(p => p);
+      return {
+        id: Date.now().toString(),
+        platform: 'soundcloud',
+        name: parts[parts.length - 1]?.replace(/-/g, ' ') || 'SoundCloud Track',
+        thumbnail: null
+      };
+    }
+    
+    // Vimeo
+    const vimeoMatch = url.match(/vimeo\.com\/(\d+)/);
+    if (vimeoMatch) {
+      return {
+        id: vimeoMatch[1],
+        platform: 'vimeo',
+        name: `Vimeo Video - ${vimeoMatch[1]}`,
+        thumbnail: null
+      };
+    }
+    
+    // Genérico
+    return {
+      id: Date.now().toString(),
+      platform: 'generic',
+      name: 'Áudio/Vídeo',
+      thumbnail: null
+    };
+  };
+
   // --- AÇÕES ---
   const addTrack = () => {
-    if (!inputUrl) return;
+    if (!inputUrl.trim()) return;
+    
+    // Verifica se a URL é suportada
+    if (!ReactPlayer.canPlay(inputUrl)) {
+      alert('URL não suportada! Use YouTube, SoundCloud, Vimeo ou Twitch.');
+      return;
+    }
+    
+    const info = extractVideoInfo(inputUrl);
     const newTrack = {
       id: Date.now(),
       url: inputUrl,
-      // Nome temporário, em produção usaríamos API
-      name: inputUrl.replace(/(^\w+:|^)\/\//, '').split('/')[0] + ' Track' 
+      name: info.name,
+      platform: info.platform,
+      thumbnail: info.thumbnail,
+      addedAt: new Date().toISOString()
     };
-    setPlaylist([newTrack, ...playlist]); // Adiciona no topo
+    
+    setPlaylist([newTrack, ...playlist]);
     setInputUrl('');
     
-    // Pequeno feedback visual: Muda para biblioteca após adicionar
     setTimeout(() => setActiveTab('library'), 300);
   };
 
@@ -58,6 +114,8 @@ function App() {
     } else {
       setCurrentTrackIndex(index);
       setIsPlaying(true);
+      setReady(false);
+      setPlayed(0);
     }
   };
 
@@ -68,10 +126,34 @@ function App() {
     if (currentTrackIndex === index) {
       setIsPlaying(false);
       setCurrentTrackIndex(null);
+      setPlayed(0);
     } else if (currentTrackIndex > index) {
       setCurrentTrackIndex(currentTrackIndex - 1);
     }
   };
+
+  const togglePlayPause = () => {
+    if (currentTrackIndex === null && playlist.length > 0) {
+      playTrack(0);
+    } else {
+      setIsPlaying(!isPlaying);
+    }
+  };
+
+  const skipToNext = () => {
+    if (currentTrackIndex !== null && currentTrackIndex < playlist.length - 1) {
+      playTrack(currentTrackIndex + 1);
+    }
+  };
+
+  const formatTime = (seconds) => {
+    if (!seconds || isNaN(seconds)) return '0:00';
+    const mins = Math.floor(seconds / 60);
+    const secs = Math.floor(seconds % 60);
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
+  };
+
+  const currentTrack = currentTrackIndex !== null ? playlist[currentTrackIndex] : null;
 
   // --- RENDER ---
   return (
@@ -107,7 +189,7 @@ function App() {
           onClick={() => setActiveTab('library')}
         >
           <LayoutList size={16} style={{marginRight:6, verticalAlign:'middle'}}/>
-          BIBLIOTECA
+          BIBLIOTECA ({playlist.length})
           {activeTab === 'library' && <motion.div layoutId="tab-indicator" className="active-indicator" />}
         </button>
       </div>
@@ -116,7 +198,7 @@ function App() {
       <div className="content-area">
         <AnimatePresence mode="wait">
           
-          {/* ABA 1: ADICIONAR (Central de Comando) */}
+          {/* ABA 1: ADICIONAR */}
           {activeTab === 'add' && (
             <motion.div 
               key="add"
@@ -135,7 +217,7 @@ function App() {
                 
                 <input 
                   className="hero-input"
-                  placeholder="https://youtube.com/..."
+                  placeholder="https://youtube.com/watch?v=..."
                   value={inputUrl}
                   onChange={(e) => setInputUrl(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && addTrack()}
@@ -153,7 +235,7 @@ function App() {
             </motion.div>
           )}
 
-          {/* ABA 2: BIBLIOTECA (Lista) */}
+          {/* ABA 2: BIBLIOTECA */}
           {activeTab === 'library' && (
             <motion.div 
               key="library"
@@ -164,8 +246,23 @@ function App() {
               transition={{ duration: 0.2 }}
             >
               {playlist.length === 0 ? (
-                 <div style={{height:'100%', display:'flex', alignItems:'center', justifyContent:'center', color:'#555'}}>
-                    Vazio como o espaço sideral.
+                 <div style={{height:'100%', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', color:'#555', gap:16}}>
+                    <Music size={48} style={{opacity:0.3}} />
+                    <p>Vazio como o espaço sideral.</p>
+                    <button 
+                      onClick={() => setActiveTab('add')} 
+                      style={{
+                        background:'rgba(168,85,247,0.1)', 
+                        border:'1px solid rgba(168,85,247,0.3)',
+                        padding:'8px 16px',
+                        borderRadius:8,
+                        color:'#a855f7',
+                        cursor:'pointer',
+                        fontSize:12
+                      }}
+                    >
+                      Adicionar primeira música
+                    </button>
                  </div>
               ) : (
                 <div style={{marginTop: '10px'}}>
@@ -177,9 +274,33 @@ function App() {
                       layout
                       initial={{ opacity: 0, y: 10 }}
                       animate={{ opacity: 1, y: 0 }}
+                      transition={{ duration: 0.2, delay: index * 0.05 }}
                     >
-                      {/* Ícone ou Equalizador */}
-                      <div style={{ width: 24, display:'flex', justifyContent:'center' }}>
+                      {/* Thumbnail ou Ícone */}
+                      <div style={{ width: 48, height: 48, borderRadius: 8, overflow: 'hidden', flexShrink: 0 }}>
+                        {track.thumbnail ? (
+                          <img 
+                            src={track.thumbnail} 
+                            alt={track.name}
+                            style={{width:'100%', height:'100%', objectFit:'cover'}}
+                            onError={(e) => e.target.style.display = 'none'}
+                          />
+                        ) : (
+                          <div style={{
+                            width:'100%', 
+                            height:'100%', 
+                            background:'rgba(168,85,247,0.1)',
+                            display:'flex',
+                            alignItems:'center',
+                            justifyContent:'center'
+                          }}>
+                            <Music size={20} color="#a855f7" />
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Número ou Equalizador */}
+                      <div style={{ width: 32, display:'flex', justifyContent:'center', marginLeft:12 }}>
                         {currentTrackIndex === index && isPlaying ? (
                           <div className="equalizer active">
                             <div className="bar"></div>
@@ -194,7 +315,11 @@ function App() {
 
                       <div className="track-info">
                         <div className="track-name">{track.name}</div>
-                        <div className="track-meta">{track.url}</div>
+                        <div className="track-meta">
+                          <span style={{textTransform:'uppercase', fontSize:10, opacity:0.6}}>
+                            {track.platform}
+                          </span>
+                        </div>
                       </div>
 
                       <button className="delete-action" onClick={(e) => deleteTrack(e, index)}>
@@ -214,46 +339,101 @@ function App() {
       <div className="master-player">
         <button 
           className="play-toggle" 
-          onClick={() => setIsPlaying(!isPlaying)}
-          disabled={currentTrackIndex === null}
-          style={{ opacity: currentTrackIndex === null ? 0.5 : 1 }}
+          onClick={togglePlayPause}
+          disabled={playlist.length === 0}
+          style={{ opacity: playlist.length === 0 ? 0.5 : 1 }}
         >
           {isPlaying ? <Pause size={20} fill="white" /> : <Play size={20} fill="white" />}
         </button>
 
         <div className="track-display">
           <h4>
-            {currentTrackIndex !== null ? playlist[currentTrackIndex]?.name : 'Sonic Layer Pro'}
+            {currentTrack ? currentTrack.name : 'Sonic Layer Pro'}
           </h4>
-          <div className="progress-container">
-            <motion.div 
-              className="progress-bar" 
-              initial={{ width: 0 }}
-              animate={{ width: `${played * 100}%` }}
-              transition={{ type: 'tween', ease: 'linear', duration: 0.1 }}
-            />
+          <div style={{display:'flex', alignItems:'center', gap:8, marginTop:4}}>
+            <span style={{fontSize:10, color:'var(--text-dim)', minWidth:35}}>
+              {formatTime(played * duration)}
+            </span>
+            <div className="progress-container" style={{flex:1}}>
+              <motion.div 
+                className="progress-bar" 
+                style={{ width: `${played * 100}%` }}
+              />
+            </div>
+            <span style={{fontSize:10, color:'var(--text-dim)', minWidth:35}}>
+              {formatTime(duration)}
+            </span>
           </div>
         </div>
 
-        {/* Info extra (opcional) */}
-        <div style={{fontSize:12, color:'var(--text-dim)'}}>
-          {Math.round(played * 100)}%
-        </div>
+        {/* Badge de status */}
+        {ready && isPlaying && (
+          <div style={{
+            fontSize:10, 
+            color:'#22c55e',
+            background:'rgba(34,197,94,0.1)',
+            padding:'4px 8px',
+            borderRadius:4,
+            border:'1px solid rgba(34,197,94,0.2)'
+          }}>
+            PLAYING
+          </div>
+        )}
       </div>
 
-      {/* Engine Invisível */}
-      <div style={{ display: 'none' }}>
-        <ReactPlayer
-          ref={playerRef}
-          url={playlist[currentTrackIndex]?.url}
-          playing={isPlaying}
-          volume={0.8}
-          onProgress={(state) => setPlayed(state.played)}
-          onEnded={() => {
-            if (currentTrackIndex < playlist.length - 1) playTrack(currentTrackIndex + 1);
-            else setIsPlaying(false);
-          }}
-        />
+      {/* Engine Invisível - ReactPlayer com configuração correta */}
+      <div style={{ position: 'absolute', top: -9999, left: -9999 }}>
+        {currentTrack && (
+          <ReactPlayer
+            ref={playerRef}
+            url={currentTrack.url}
+            playing={isPlaying}
+            volume={0.8}
+            width="0"
+            height="0"
+            config={{
+              youtube: {
+                playerVars: { 
+                  showinfo: 0,
+                  controls: 0,
+                  modestbranding: 1
+                }
+              },
+              soundcloud: {
+                options: {
+                  auto_play: false,
+                  buying: false,
+                  sharing: false,
+                  download: false,
+                  show_artwork: true
+                }
+              }
+            }}
+            onReady={() => {
+              setReady(true);
+              console.log('Player ready:', currentTrack.name);
+            }}
+            onStart={() => console.log('Playback started')}
+            onPlay={() => console.log('Playing...')}
+            onPause={() => console.log('Paused')}
+            onBuffer={() => console.log('Buffering...')}
+            onError={(error) => {
+              console.error('Player error:', error);
+              alert('Erro ao reproduzir. Verifique a URL e tente novamente.');
+            }}
+            onProgress={(state) => {
+              setPlayed(state.played);
+            }}
+            onDuration={(dur) => {
+              setDuration(dur);
+              console.log('Duration:', dur);
+            }}
+            onEnded={() => {
+              console.log('Track ended');
+              skipToNext();
+            }}
+          />
+        )}
       </div>
     </div>
   );
